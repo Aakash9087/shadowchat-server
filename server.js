@@ -1,13 +1,16 @@
-// server.js
-// ShadowChat relay server + basic metrics + DEBUG LOG
-// Concept by Jamin – coded by Jack
+// ============================================================
+// ShadowChat Relay Server (FINAL FIXED VERSION – By Jack for Jamin)
+// Ultra-stable WebSocket relay with sessions + media support
+// ============================================================
 
 const http = require("http");
 const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 8080;
 
-// ========= In-memory state =========
+// ==============================
+// In-memory state
+// ==============================
 
 // userId -> { ws, name }
 const clients = new Map();
@@ -15,83 +18,79 @@ const clients = new Map();
 // sessionId -> { aId, bId }
 const sessions = new Map();
 
-// simple counters (no user-identifying logs)
 let activeConnections = 0;
 let totalConnections = 0;
 let totalSessionsStarted = 0;
 
-// ========= Helpers =========
+// ==============================
+// Helpers
+// ==============================
 
-function makeSessionId(aId, bId) {
-  return [aId, bId].sort().join("#");
+function makeSessionId(a, b) {
+  return [a, b].sort().join("#");
 }
 
 function sendToUser(userId, payload) {
   const c = clients.get(userId);
   if (!c || c.ws.readyState !== WebSocket.OPEN) {
-    console.log("[SEND FAIL]", userId, "not connected");
     return;
   }
-  console.log("[SEND]", "→", userId, payload.type);
   c.ws.send(JSON.stringify(payload));
 }
 
-function broadcastStats() {
-  const data = JSON.stringify({
-    type: "stats",
-    activeConnections,
-  });
-  for (const [uid, { ws }] of clients.entries()) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
-    }
-  }
+function cleanPayload(obj) {
+  return JSON.stringify(obj);
 }
 
-// ========= HTTP server (/metrics) =========
+// ==============================
+// HTTP server (health + metrics)
+// ==============================
 
 const server = http.createServer((req, res) => {
   if (req.url === "/metrics") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
+    return res.end(
       JSON.stringify({
         activeConnections,
         totalConnections,
         totalSessionsStarted,
-        uptimeSeconds: Math.floor(process.uptime()),
+        uptime: Math.floor(process.uptime()),
       })
     );
-    return;
   }
 
-  res.writeHead(404);
-  res.end("Not found");
+  res.writeHead(200);
+  res.end("ShadowChat Relay OK");
 });
 
-const wss = new WebSocket.Server({ server });
+// ==============================
+// WebSocket Server
+// ==============================
 
-// ========= WebSocket logic =========
+const wss = new WebSocket.Server({ server });
 
 wss.on("connection", (ws) => {
   activeConnections++;
   totalConnections++;
 
-  let currentUserId = null;
-  console.log("🔗 New WS connection. Active:", activeConnections);
+  ws.isAlive = true;
+  ws.on("pong", () => (ws.isAlive = true));
 
-  ws.on("message", (msg) => {
+  let currentUserId = null;
+
+  ws.on("message", (raw) => {
     let data;
     try {
-      data = JSON.parse(msg.toString());
-    } catch (e) {
-      console.log("Bad JSON:", msg.toString());
+      data = JSON.parse(raw.toString());
+    } catch {
       return;
     }
 
     const type = data.type;
-    console.log("[WS IN]", type, "from", currentUserId);
 
-    // 1) hello: register userId + name
+    // ----------------------------
+    // 1) HELLO = Register User
+    // ----------------------------
     if (type === "hello") {
       const { userId, name } = data;
       if (!userId) return;
@@ -99,51 +98,33 @@ wss.on("connection", (ws) => {
       currentUserId = userId;
       clients.set(userId, { ws, name: name || "User" });
 
-      console.log("👤 Registered user:", userId, "name:", name);
-
-      sendToUser(userId, {
-        type: "hello-ack",
-        ok: true,
-      });
-
-      broadcastStats();
+      sendToUser(userId, { type: "hello-ack", ok: true });
       return;
     }
 
-    // Without userId ignore others
-    if (!currentUserId) {
-      console.log("Ignoring msg without hello");
-      return;
-    }
+    // Ignore everything else until hello registered
+    if (!currentUserId) return;
 
-    // 2) request chat
+    // ----------------------------
+    // 2) REQUEST CHAT
+    // ----------------------------
     if (type === "request-chat") {
       const { fromId, toId } = data;
+
       if (!fromId || !toId) return;
-
-      console.log("📩 Chat request", fromId, "→", toId);
-
-      if (!/^SC-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(toId)) {
-        sendToUser(fromId, {
-          type: "request-failed",
-          reason: "Invalid Chat ID format.",
-        });
-        return;
-      }
-
-      const target = clients.get(toId);
-      if (!target) {
-        sendToUser(fromId, {
+      if (!clients.has(toId)) {
+        return sendToUser(fromId, {
           type: "request-failed",
           reason: "Target user not online.",
         });
-        return;
       }
+
+      const target = clients.get(toId);
 
       sendToUser(toId, {
         type: "incoming-request",
         fromId,
-        fromName: clients.get(fromId)?.name || "Anonymous",
+        fromName: clients.get(fromId)?.name || "User",
       });
 
       sendToUser(fromId, {
@@ -154,26 +135,22 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // 3) response chat: accept / reject
+    // ----------------------------
+    // 3) RESPONSE CHAT
+    // ----------------------------
     if (type === "response-chat") {
       const { fromId, toId, accept } = data;
-      if (!fromId || !toId) return;
-
-      console.log("✅ Chat response from", fromId, "→", toId, "accept?", accept);
 
       if (!accept) {
-        sendToUser(toId, {
+        return sendToUser(toId, {
           type: "request-failed",
           reason: "Request rejected.",
         });
-        return;
       }
 
       const sid = makeSessionId(fromId, toId);
       sessions.set(sid, { aId: fromId, bId: toId });
       totalSessionsStarted++;
-
-      console.log("🔐 Session started:", sid);
 
       const aName = clients.get(fromId)?.name || "User";
       const bName = clients.get(toId)?.name || "User";
@@ -195,22 +172,17 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // 4) message relay (MAIN)
+    // ----------------------------
+    // 4) MESSAGE RELAY
+    // ----------------------------
     if (type === "message") {
       const { sessionId, fromId, text, selfDestruct, encrypted } = data;
-      if (!sessionId || !fromId || typeof text !== "string") return;
 
+      if (!sessionId || !fromId) return;
       const s = sessions.get(sessionId);
-      if (!s) {
-        console.log("No session found for", sessionId);
-        return;
-      }
+      if (!s) return;
 
       const toId = s.aId === fromId ? s.bId : s.aId;
-      if (!toId) {
-        console.log("No peer found for", sessionId, "from", fromId);
-        return;
-      }
 
       const msgId = `${sessionId}:${Date.now()}:${Math.random()
         .toString(16)
@@ -227,12 +199,11 @@ wss.on("connection", (ws) => {
         timestamp: Date.now(),
       };
 
-      console.log("✉ Relay", msgId, "from", fromId, "to", toId);
-
-      // দু’দিকেই পাঠাচ্ছে
+      // send BOTH directions (frontend filters self)
       sendToUser(fromId, payload);
       sendToUser(toId, payload);
 
+      // Self-destruct timer
       const ttl = Number(selfDestruct || 0);
       if (ttl > 0 && ttl <= 5 * 60 * 1000) {
         setTimeout(() => {
@@ -245,18 +216,16 @@ wss.on("connection", (ws) => {
           sendToUser(toId, del);
         }, ttl);
       }
-
       return;
     }
 
-    // 5) edit message
+    // ----------------------------
+    // 5) EDIT MESSAGE (optional)
+    // ----------------------------
     if (type === "edit-message") {
       const { sessionId, messageId, newText } = data;
-      if (!sessionId || !messageId || typeof newText !== "string") return;
-
       const s = sessions.get(sessionId);
       if (!s) return;
-      const { aId, bId } = s;
 
       const payload = {
         type: "edit-message",
@@ -264,52 +233,49 @@ wss.on("connection", (ws) => {
         sessionId,
         newText,
       };
-      sendToUser(aId, payload);
-      sendToUser(bId, payload);
+
+      sendToUser(s.aId, payload);
+      sendToUser(s.bId, payload);
       return;
     }
 
-    // 6) end session
+    // ----------------------------
+    // 6) END SESSION
+    // ----------------------------
     if (type === "end-session") {
       const { sessionId } = data;
-      if (!sessionId) return;
       const s = sessions.get(sessionId);
       if (!s) return;
 
-      const { aId, bId } = s;
       sessions.delete(sessionId);
 
-      console.log("🔚 Session ended:", sessionId);
-
-      const payload = { type: "session-ended", sessionId };
-      sendToUser(aId, payload);
-      sendToUser(bId, payload);
-      return;
-    }
-
-    // 7) client stats request
-    if (type === "get-stats") {
-      sendToUser(currentUserId, {
-        type: "stats",
-        activeConnections,
-      });
+      sendToUser(s.aId, { type: "session-ended", sessionId });
+      sendToUser(s.bId, { type: "session-ended", sessionId });
       return;
     }
   });
 
+  // ----------------------------
+  // DISCONNECT
+  // ----------------------------
   ws.on("close", () => {
     activeConnections--;
-    if (activeConnections < 0) activeConnections = 0;
-
-    if (currentUserId && clients.has(currentUserId)) {
-      clients.delete(currentUserId);
-    }
-
-    console.log("❌ WS closed:", currentUserId);
-    broadcastStats();
+    if (currentUserId) clients.delete(currentUserId);
   });
 });
 
+// ==============================
+// Heartbeat (Render keep-alive)
+// ==============================
+
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
 server.listen(PORT, () => {
-  console.log(`ShadowChat relay listening on port ${PORT}`);
+  console.log("ShadowChat Relay running on", PORT);
 });
