@@ -5,10 +5,30 @@
 
 const WebSocket = require("ws");
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 
 const PORT = process.env.PORT || 10000;
 
-const server = http.createServer();
+const server = http.createServer((req, res) => {
+  // Serve static files (HTML, CSS, JS)
+  let filePath = path.join(__dirname, req.url === "/" ? "index.html" : req.url);
+  const ext = path.extname(filePath);
+  let contentType = "text/html";
+
+  if (ext === ".js") contentType = "text/javascript";
+  else if (ext === ".css") contentType = "text/css";
+
+  fs.readFile(filePath, (err, content) => {
+    if (err) {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ShadowChat Relay Online");
+    } else {
+      res.writeHead(200, { "Content-Type": contentType });
+      res.end(content, "utf-8");
+    }
+  });
+});
 const wss = new WebSocket.Server({ server });
 
 /* ================= STATE ================= */
@@ -108,7 +128,18 @@ wss.on("connection", (ws) => {
       case "response-chat": {
         const { fromId, toId, accept } = data;
 
-        if (!accept) return;
+        if (!accept) {
+          // Handle Rejection
+          const requester = users.get(toId);
+          if (requester) {
+            safeSend(requester.socket, {
+              type: "request-rejected",
+              fromId,
+              fromName: users.get(fromId)?.name || "User",
+            });
+          }
+          return;
+        }
 
         const sessionId = generateSessionId();
 
@@ -136,6 +167,48 @@ wss.on("connection", (ws) => {
           });
 
         console.log("Session started:", sessionId);
+        break;
+      }
+
+      /* ========== WEBRTC SIGNALING (VIDEO/AUDIO) ========== */
+      case "signal": {
+        const { toId, signalData } = data;
+        const target = users.get(toId);
+
+        if (target) {
+          safeSend(target.socket, {
+            type: "signal",
+            fromId: currentUserId,
+            signalData,
+          });
+        }
+        break;
+      }
+
+      /* ========== TYPING INDICATOR ========== */
+      case "typing": {
+        const { sessionId, fromId, isTyping } = data;
+        if (!sessions.has(sessionId)) return;
+
+        broadcastToSession(sessionId, {
+          type: "typing",
+          fromId,
+          isTyping
+        });
+        break;
+      }
+
+      /* ========== KEY EXCHANGE (E2EE) ========== */
+      case "key-exchange": {
+        const { toId, keyData } = data;
+        const target = users.get(toId);
+        if (target) {
+          safeSend(target.socket, {
+            type: "key-exchange",
+            fromId: currentUserId,
+            keyData
+          });
+        }
         break;
       }
 
@@ -170,12 +243,25 @@ wss.on("connection", (ws) => {
 
       /* ========== EDIT MESSAGE ========== */
       case "edit-message": {
-        const { sessionId, messageId, newText } = data;
+        const { sessionId, messageId, newText, fromId } = data;
+        
+        if (!sessions.has(sessionId)) return;
 
         broadcastToSession(sessionId, {
           type: "edit-message",
           id: messageId,
+          fromId,
           newText,
+        });
+
+        break;
+      }
+
+      case "delete-message": {
+        const { sessionId, id } = data;
+        broadcastToSession(sessionId, {
+          type: "delete-message",
+          id,
         });
 
         break;
@@ -195,50 +281,93 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      /* ========== BASIC GROUP BASE (FUTURE READY) ========== */
+      /* ========== GROUP CHAT ========== */
       case "create-group": {
-        const { groupId, owner } = data;
+        const { fromId, groupName } = data;
+        const groupId = "G-" + Math.random().toString(36).substring(2, 8).toUpperCase();
 
         groups.set(groupId, {
-          owner,
-          members: [owner],
+          name: groupName || "Group Chat",
+          members: [fromId],
+          owner: fromId
         });
 
-        break;
-      }
-
-      case "group-join-request": {
-        const { groupId, userId } = data;
-        const group = groups.get(groupId);
-        if (!group) return;
-
-        const ownerUser = users.get(group.owner);
-        if (!ownerUser) return;
-
-        safeSend(ownerUser.socket, {
-          type: "group-join-request",
+        safeSend(ws, {
+          type: "group-created",
           groupId,
-          userId,
+          groupName: groupName || "Group Chat"
         });
-
+        console.log("Group created:", groupId);
         break;
       }
 
-      case "group-approve": {
-        const { groupId, userId } = data;
+      case "join-group": {
+        const { fromId, groupId } = data;
         const group = groups.get(groupId);
-        if (!group) return;
-
-        group.members.push(userId);
-
-        const user = users.get(userId);
-        if (user) {
-          safeSend(user.socket, {
+        
+        if (!group) {
+          safeSend(ws, { type: "error", message: "Group not found" });
+          return;
+        }
+        
+        // If already a member, just sync
+        if (group.members.includes(fromId)) {
+          safeSend(ws, {
             type: "group-joined",
             groupId,
+            groupName: group.name,
+            members: group.members
           });
+          return;
         }
 
+        // Auto-join: Add to members directly
+        group.members.push(fromId);
+
+        // Notify Requester (Success)
+        safeSend(ws, {
+          type: "group-joined",
+          groupId,
+          groupName: group.name,
+          members: group.members
+        });
+
+        // Notify Others in the group
+        group.members.forEach(uid => {
+          if (uid !== fromId) {
+            const u = users.get(uid);
+            if (u) safeSend(u.socket, { 
+              type: "group-user-joined", 
+              groupId,
+              userId: fromId, 
+              userName: users.get(fromId)?.name,
+              memberCount: group.members.length
+            });
+          }
+        });
+        break;
+      }
+
+      case "group-message": {
+        const { groupId, fromId, text } = data;
+        const group = groups.get(groupId);
+        if (!group) return;
+
+        const payload = {
+          type: "group-message",
+          groupId,
+          from: fromId,
+          fromName: users.get(fromId)?.name || "Unknown",
+          text,
+          timestamp: Date.now()
+        };
+
+        group.members.forEach(uid => {
+          if (uid !== fromId) {
+            const u = users.get(uid);
+            if (u) safeSend(u.socket, payload);
+          }
+        });
         break;
       }
 
@@ -248,20 +377,22 @@ wss.on("connection", (ws) => {
   /* ========== DISCONNECT CLEANUP ========== */
   ws.on("close", () => {
     if (currentUserId) {
-      users.delete(currentUserId);
+      const user = users.get(currentUserId);
+      
+      // Fix: Only delete if the closing socket is the current active one
+      // This prevents deleting the user if they quickly reconnected (page refresh)
+      if (user && user.socket === ws) {
+        users.delete(currentUserId);
 
-      // Remove from sessions
-      for (const [sid, session] of sessions.entries()) {
-        if (session.users.includes(currentUserId)) {
-          broadcastToSession(sid, {
-            type: "session-ended",
-            sessionId: sid,
-          });
-          sessions.delete(sid);
+        // Remove from sessions (P2P only)
+        for (const [sid, session] of sessions.entries()) {
+          if (session.users.includes(currentUserId)) {
+            broadcastToSession(sid, { type: "session-ended", sessionId: sid });
+            sessions.delete(sid);
+          }
         }
+        console.log("Disconnected:", currentUserId);
       }
-
-      console.log("Disconnected:", currentUserId);
     }
   });
 });

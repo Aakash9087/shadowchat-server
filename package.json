@@ -1,16 +1,10 @@
 {
-  "name": "shadowchat-relay",
+  "name": "shadowchat-secure",
   "version": "1.0.0",
-  "description": "ShadowChat WebSocket Relay Server",
-  "main": "server.js",
-  "type": "commonjs",
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.16.0"
+    "ws": "^8.19.0"
   }
 }
