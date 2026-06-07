@@ -181,6 +181,11 @@ wss.on("connection", (ws) => {
             fromId: currentUserId,
             signalData,
           });
+          } else {
+            safeSend(ws, {
+              type: "error",
+              message: "Peer is offline. Call cannot be completed."
+            });
         }
         break;
       }
