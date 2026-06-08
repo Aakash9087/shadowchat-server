@@ -88,13 +88,14 @@ wss.on("connection", (ws) => {
 
       /* ========== HELLO REGISTER ========== */
       case "hello": {
-        const { userId, name } = data;
+        const { userId, name, avatar } = data;
         if (!userId) return;
 
         currentUserId = userId;
         users.set(userId, {
           socket: ws,
           name: name || "User",
+          avatar: avatar || null
         });
 
         safeSend(ws, { type: "hello-ack", ok: true });
@@ -119,6 +120,7 @@ wss.on("connection", (ws) => {
           type: "incoming-request",
           fromId,
           fromName: users.get(fromId)?.name || "User",
+          fromAvatar: users.get(fromId)?.avatar
         });
 
         break;
@@ -136,6 +138,7 @@ wss.on("connection", (ws) => {
               type: "request-rejected",
               fromId,
               fromName: users.get(fromId)?.name || "User",
+              fromAvatar: users.get(fromId)?.avatar
             });
           }
           return;
@@ -156,6 +159,7 @@ wss.on("connection", (ws) => {
             sessionId,
             peerId: toId,
             peerName: users.get(toId)?.name || "User",
+            peerAvatar: users.get(toId)?.avatar
           });
 
         if (userB)
@@ -164,6 +168,7 @@ wss.on("connection", (ws) => {
             sessionId,
             peerId: fromId,
             peerName: users.get(fromId)?.name || "User",
+            peerAvatar: users.get(fromId)?.avatar
           });
 
         console.log("Session started:", sessionId);
@@ -190,6 +195,28 @@ wss.on("connection", (ws) => {
         break;
       }
 
+      /* ========== REACTIONS ========== */
+      case "reaction": {
+        const { sessionId, msgId, reaction, fromId } = data;
+        if (!sessions.has(sessionId)) return;
+        broadcastToSession(sessionId, { type: "reaction", msgId, reaction, fromId });
+        break;
+      }
+      
+      case "group-reaction": {
+        const { groupId, msgId, reaction, fromId } = data;
+        const group = groups.get(groupId);
+        if (!group) return;
+        const payload = { type: "reaction", msgId, reaction, fromId, groupId };
+        group.members.forEach(uid => {
+          if (uid !== fromId) {
+            const u = users.get(uid);
+            if (u) safeSend(u.socket, payload);
+          }
+        });
+        break;
+      }
+
       /* ========== TYPING INDICATOR ========== */
       case "typing": {
         const { sessionId, fromId, isTyping } = data;
@@ -200,6 +227,34 @@ wss.on("connection", (ws) => {
           fromId,
           isTyping
         });
+        break;
+      }
+
+      /* ========== ADVANCED CALL SIGNALING ========== */
+      case "call-request": {
+        const { toId, callType } = data;
+        const target = users.get(toId);
+        if (target) {
+          safeSend(target.socket, { type: "call-request", fromId: currentUserId, fromName: users.get(currentUserId)?.name, callType });
+        }
+        break;
+      }
+      case "call-response": {
+        const { toId, accept } = data;
+        const target = users.get(toId);
+        if (target) {
+          safeSend(target.socket, { type: "call-response", fromId: currentUserId, accept });
+        }
+        break;
+      }
+
+      /* ========== MESSAGE ACK (SEEN STATUS) ========== */
+      case "message-ack": {
+        const { toId, messageId, status } = data;
+        const target = users.get(toId);
+        if (target) {
+          safeSend(target.socket, { type: "message-ack", fromId: currentUserId, messageId, status });
+        }
         break;
       }
 
@@ -227,6 +282,8 @@ wss.on("connection", (ws) => {
           type: "message",
           sessionId,
           from: fromId,
+          fromName: users.get(fromId)?.name || "Unknown",
+          fromAvatar: users.get(fromId)?.avatar,
           text,
           timestamp: Date.now(),
         };
@@ -346,6 +403,7 @@ wss.on("connection", (ws) => {
               groupId,
               userId: fromId, 
               userName: users.get(fromId)?.name,
+              userAvatar: users.get(fromId)?.avatar,
               memberCount: group.members.length
             });
           }
@@ -363,6 +421,7 @@ wss.on("connection", (ws) => {
           groupId,
           from: fromId,
           fromName: users.get(fromId)?.name || "Unknown",
+          fromAvatar: users.get(fromId)?.avatar,
           text,
           timestamp: Date.now()
         };
