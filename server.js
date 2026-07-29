@@ -275,17 +275,20 @@ wss.on("connection", (ws) => {
       /* ========== MESSAGE RELAY ========== */
       case "message": {
         const { sessionId, fromId, text, selfDestruct } = data;
+        const msgId = Date.now(); // Generate timestamp once to use as ID
 
         if (!sessions.has(sessionId)) return;
 
         const payload = {
           type: "message",
           sessionId,
+          msgId: msgId, // Use the generated ID
           from: fromId,
           fromName: users.get(fromId)?.name || "Unknown",
           fromAvatar: users.get(fromId)?.avatar,
           text,
-          timestamp: Date.now(),
+          timestamp: msgId,
+          selfDestruct: selfDestruct // Pass the timer value
         };
 
         broadcastToSession(sessionId, payload);
@@ -295,7 +298,7 @@ wss.on("connection", (ws) => {
           setTimeout(() => {
             broadcastToSession(sessionId, {
               type: "delete-message",
-              id: payload.timestamp,
+              id: msgId,
             });
           }, Number(selfDestruct));
         }
