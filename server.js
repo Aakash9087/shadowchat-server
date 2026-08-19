@@ -18,6 +18,10 @@ const PORT = process.env.PORT || 10000;
 
 const server = http.createServer((req, res) => {
 
+  /*
+   * Prevent path traversal.
+   */
+
   let requestedPath =
     decodeURIComponent(
       (req.url || "/").split("?")[0]
@@ -61,11 +65,16 @@ const server = http.createServer((req, res) => {
     contentTypes[ext] ||
     "application/octet-stream";
 
+
   fs.readFile(
     filePath,
     (err, content) => {
 
       if (err) {
+
+        /*
+         * Keep the old fallback behaviour.
+         */
 
         res.writeHead(
           200,
@@ -81,6 +90,7 @@ const server = http.createServer((req, res) => {
 
         return;
       }
+
 
       res.writeHead(
         200,
@@ -115,14 +125,45 @@ const wss =
    STATE
    ====================================================== */
 
+/*
+ * userId -> {
+ *   socket,
+ *   name,
+ *   avatar
+ * }
+ */
+
 const users =
   new Map();
+
+
+/*
+ * sessionId -> {
+ *   users: [id1, id2]
+ * }
+ */
 
 const sessions =
   new Map();
 
+
+/*
+ * groupId -> {
+ *   name,
+ *   members: [],
+ *   owner
+ * }
+ */
+
 const groups =
   new Map();
+
+
+/*
+ * self-destruct timers
+ *
+ * messageKey -> timeout handle
+ */
 
 const messageTimers =
   new Map();
@@ -136,11 +177,14 @@ function generateSessionId() {
 
   return (
     "S-" +
+
     Math.random()
       .toString(36)
       .substring(2, 6)
       .toUpperCase() +
+
     "-" +
+
     Math.random()
       .toString(36)
       .substring(2, 6)
@@ -165,6 +209,7 @@ function generateGroupId() {
 
   return (
     "G-" +
+
     Math.random()
       .toString(36)
       .substring(2, 8)
@@ -173,7 +218,10 @@ function generateGroupId() {
 }
 
 
-function safeSend(ws, data) {
+function safeSend(
+  ws,
+  data
+) {
 
   if (
     ws &&
@@ -204,11 +252,14 @@ function broadcastToSession(
 ) {
 
   const session =
-    sessions.get(sessionId);
+    sessions.get(
+      sessionId
+    );
 
   if (!session) {
     return;
   }
+
 
   session.users.forEach(
     (uid) => {
@@ -255,7 +306,9 @@ function isSessionMember(
 ) {
 
   const session =
-    sessions.get(sessionId);
+    sessions.get(
+      sessionId
+    );
 
   if (!session) {
     return false;
@@ -282,7 +335,9 @@ function clearMessageTimer(
 
     clearTimeout(timer);
 
-    messageTimers.delete(key);
+    messageTimers.delete(
+      key
+    );
   }
 }
 
@@ -300,6 +355,7 @@ function scheduleMessageDeletion(
   const delay =
     Number(delayMs);
 
+
   if (
     !Number.isFinite(delay) ||
     delay <= 0
@@ -307,17 +363,37 @@ function scheduleMessageDeletion(
     return;
   }
 
+
+  /*
+   * Remove any previous timer
+   * using the same message ID.
+   */
+
   clearMessageTimer(
     sessionId,
     msgId
   );
 
+
   const key =
     `${sessionId}:${String(msgId)}`;
+
 
   const timer =
     setTimeout(
       () => {
+
+        /*
+         * Delete on BOTH clients.
+         *
+         * Client already listens for:
+         *
+         * delete-message
+         *
+         * and calls:
+         *
+         * handleDeleteMessage(data.id)
+         */
 
         broadcastToSession(
           sessionId,
@@ -333,7 +409,10 @@ function scheduleMessageDeletion(
           }
         );
 
-        messageTimers.delete(key);
+
+        messageTimers.delete(
+          key
+        );
 
         console.log(
           "Self-destruct:",
@@ -345,6 +424,7 @@ function scheduleMessageDeletion(
       },
       delay
     );
+
 
   messageTimers.set(
     key,
@@ -362,8 +442,9 @@ wss.on(
   (ws) => {
 
     console.log(
-      "New WebSocket connection"
+      "New connection"
     );
+
 
     let currentUserId =
       null;
@@ -398,13 +479,17 @@ wss.on(
 
         if (
           !data ||
-          typeof data.type !== "string"
+          typeof data.type !==
+            "string"
         ) {
+
           return;
         }
 
 
-        switch (data.type) {
+        switch (
+          data.type
+        ) {
 
 
           /* ============================================
@@ -419,12 +504,21 @@ wss.on(
               avatar
             } = data;
 
+
             if (!userId) {
               return;
             }
 
+
+            /*
+             * If the same user reconnects,
+             * replace the old socket.
+             */
+
             const oldUser =
-              users.get(userId);
+              users.get(
+                userId
+              );
 
             if (
               oldUser &&
@@ -432,33 +526,47 @@ wss.on(
             ) {
 
               try {
+
                 oldUser.socket.close();
+
               } catch (e) {}
             }
+
 
             currentUserId =
               String(userId);
 
+
             users.set(
               currentUserId,
               {
-                socket: ws,
+
+                socket:
+                  ws,
+
                 name:
-                  name || "User",
+                  name ||
+                  "User",
+
                 avatar:
-                  avatar || null
+                  avatar ||
+                  null
+
               }
             );
+
 
             safeSend(
               ws,
               {
                 type:
                   "hello-ack",
+
                 ok:
                   true
               }
             );
+
 
             console.log(
               "Registered:",
@@ -480,6 +588,7 @@ wss.on(
               toId
             } = data;
 
+
             if (
               !fromId ||
               !toId
@@ -487,28 +596,36 @@ wss.on(
               return;
             }
 
+
             const target =
-              users.get(toId);
+              users.get(
+                toId
+              );
+
 
             if (!target) {
 
               safeSend(
                 ws,
                 {
+
                   type:
                     "request-failed",
 
                   reason:
                     "User not online"
+
                 }
               );
 
               return;
             }
 
+
             safeSend(
               target.socket,
               {
+
                 type:
                   "incoming-request",
 
@@ -516,14 +633,20 @@ wss.on(
                   fromId,
 
                 fromName:
-                  users.get(fromId)?.name ||
+                  users.get(
+                    fromId
+                  )?.name ||
                   "User",
 
                 fromAvatar:
-                  users.get(fromId)?.avatar ||
+                  users.get(
+                    fromId
+                  )?.avatar ||
                   null
+
               }
             );
+
 
             break;
           }
@@ -541,6 +664,7 @@ wss.on(
               accept
             } = data;
 
+
             if (
               !fromId ||
               !toId
@@ -548,16 +672,25 @@ wss.on(
               return;
             }
 
+
+            /*
+             * Rejected request.
+             */
+
             if (!accept) {
 
               const requester =
-                users.get(toId);
+                users.get(
+                  toId
+                );
+
 
               if (requester) {
 
                 safeSend(
                   requester.socket,
                   {
+
                     type:
                       "request-rejected",
 
@@ -565,12 +698,17 @@ wss.on(
                       fromId,
 
                     fromName:
-                      users.get(fromId)?.name ||
+                      users.get(
+                        fromId
+                      )?.name ||
                       "User",
 
                     fromAvatar:
-                      users.get(fromId)?.avatar ||
+                      users.get(
+                        fromId
+                      )?.avatar ||
                       null
+
                   }
                 );
               }
@@ -578,30 +716,45 @@ wss.on(
               return;
             }
 
+
+            /*
+             * Make a new session.
+             */
+
             const sessionId =
               generateSessionId();
+
 
             sessions.set(
               sessionId,
               {
+
                 users: [
                   fromId,
                   toId
                 ]
+
               }
             );
 
+
             const userA =
-              users.get(fromId);
+              users.get(
+                fromId
+              );
 
             const userB =
-              users.get(toId);
+              users.get(
+                toId
+              );
+
 
             if (userA) {
 
               safeSend(
                 userA.socket,
                 {
+
                   type:
                     "chat-start",
 
@@ -612,21 +765,28 @@ wss.on(
                     toId,
 
                   peerName:
-                    users.get(toId)?.name ||
+                    users.get(
+                      toId
+                    )?.name ||
                     "User",
 
                   peerAvatar:
-                    users.get(toId)?.avatar ||
+                    users.get(
+                      toId
+                    )?.avatar ||
                     null
+
                 }
               );
             }
+
 
             if (userB) {
 
               safeSend(
                 userB.socket,
                 {
+
                   type:
                     "chat-start",
 
@@ -637,20 +797,27 @@ wss.on(
                     fromId,
 
                   peerName:
-                    users.get(fromId)?.name ||
+                    users.get(
+                      fromId
+                    )?.name ||
                     "User",
 
                   peerAvatar:
-                    users.get(fromId)?.avatar ||
+                    users.get(
+                      fromId
+                    )?.avatar ||
                     null
+
                 }
               );
             }
+
 
             console.log(
               "Session started:",
               sessionId
             );
+
 
             break;
           }
@@ -667,6 +834,7 @@ wss.on(
               signalData
             } = data;
 
+
             if (
               !toId ||
               !signalData
@@ -674,14 +842,19 @@ wss.on(
               return;
             }
 
+
             const target =
-              users.get(toId);
+              users.get(
+                toId
+              );
+
 
             if (target) {
 
               safeSend(
                 target.socket,
                 {
+
                   type:
                     "signal",
 
@@ -690,6 +863,7 @@ wss.on(
 
                   signalData:
                     signalData
+
                 }
               );
 
@@ -698,14 +872,17 @@ wss.on(
               safeSend(
                 ws,
                 {
+
                   type:
                     "error",
 
                   message:
                     "Peer is offline. Call cannot be completed."
+
                 }
               );
             }
+
 
             break;
           }
@@ -724,28 +901,31 @@ wss.on(
               fromId
             } = data;
 
-            if (
-              !sessions.has(sessionId)
-            ) {
-              return;
-            }
-
-            const senderId =
-              fromId ||
-              currentUserId;
 
             if (
-              !isSessionMember(
-                sessionId,
-                senderId
+              !sessions.has(
+                sessionId
               )
             ) {
               return;
             }
 
+
+            if (
+              !isSessionMember(
+                sessionId,
+                fromId ||
+                  currentUserId
+              )
+            ) {
+              return;
+            }
+
+
             broadcastToSession(
               sessionId,
               {
+
                 type:
                   "reaction",
 
@@ -756,9 +936,12 @@ wss.on(
                   reaction,
 
                 fromId:
-                  senderId
+                  fromId ||
+                  currentUserId
+
               }
             );
+
 
             break;
           }
@@ -777,16 +960,22 @@ wss.on(
               fromId
             } = data;
 
+
             const group =
-              groups.get(groupId);
+              groups.get(
+                groupId
+              );
+
 
             if (!group) {
               return;
             }
 
+
             const senderId =
               fromId ||
               currentUserId;
+
 
             if (
               !group.members.includes(
@@ -796,7 +985,9 @@ wss.on(
               return;
             }
 
+
             const payload = {
+
               type:
                 "reaction",
 
@@ -811,17 +1002,27 @@ wss.on(
 
               groupId:
                 groupId
+
             };
+
 
             group.members.forEach(
               (uid) => {
+
+                /*
+                 * Keep existing behaviour:
+                 * don't send reaction back
+                 * to the sender.
+                 */
 
                 if (
                   uid !== senderId
                 ) {
 
                   const user =
-                    users.get(uid);
+                    users.get(
+                      uid
+                    );
 
                   if (user) {
 
@@ -833,6 +1034,7 @@ wss.on(
                 }
               }
             );
+
 
             break;
           }
@@ -850,38 +1052,44 @@ wss.on(
               isTyping
             } = data;
 
-            if (
-              !sessions.has(sessionId)
-            ) {
-              return;
-            }
-
-            const senderId =
-              fromId ||
-              currentUserId;
 
             if (
-              !isSessionMember(
-                sessionId,
-                senderId
+              !sessions.has(
+                sessionId
               )
             ) {
               return;
             }
 
+
+            if (
+              !isSessionMember(
+                sessionId,
+                fromId ||
+                  currentUserId
+              )
+            ) {
+              return;
+            }
+
+
             broadcastToSession(
               sessionId,
               {
+
                 type:
                   "typing",
 
                 fromId:
-                  senderId,
+                  fromId ||
+                  currentUserId,
 
                 isTyping:
                   !!isTyping
+
               }
             );
+
 
             break;
           }
@@ -898,28 +1106,36 @@ wss.on(
               callType
             } = data;
 
+
             const target =
-              users.get(toId);
+              users.get(
+                toId
+              );
+
 
             if (!target) {
 
               safeSend(
                 ws,
                 {
+
                   type:
                     "call-error",
 
                   message:
                     "User is offline."
+
                 }
               );
 
               return;
             }
 
+
             safeSend(
               target.socket,
               {
+
                 type:
                   "call-request",
 
@@ -927,14 +1143,18 @@ wss.on(
                   currentUserId,
 
                 fromName:
-                  users.get(currentUserId)?.name ||
+                  users.get(
+                    currentUserId
+                  )?.name ||
                   "User",
 
                 callType:
                   callType ||
                   "audio"
+
               }
             );
+
 
             break;
           }
@@ -952,28 +1172,36 @@ wss.on(
               callType
             } = data;
 
+
             const target =
-              users.get(toId);
+              users.get(
+                toId
+              );
+
 
             if (!target) {
 
               safeSend(
                 ws,
                 {
+
                   type:
                     "call-error",
 
                   message:
                     "Peer is offline."
+
                 }
               );
 
               return;
             }
 
+
             safeSend(
               target.socket,
               {
+
                 type:
                   "call-response",
 
@@ -986,8 +1214,10 @@ wss.on(
                 callType:
                   callType ||
                   null
+
               }
             );
+
 
             break;
           }
@@ -1005,14 +1235,19 @@ wss.on(
               status
             } = data;
 
+
             const target =
-              users.get(toId);
+              users.get(
+                toId
+              );
+
 
             if (target) {
 
               safeSend(
                 target.socket,
                 {
+
                   type:
                     "message-ack",
 
@@ -1024,9 +1259,11 @@ wss.on(
 
                   status:
                     status
+
                 }
               );
             }
+
 
             break;
           }
@@ -1043,14 +1280,19 @@ wss.on(
               keyData
             } = data;
 
+
             const target =
-              users.get(toId);
+              users.get(
+                toId
+              );
+
 
             if (target) {
 
               safeSend(
                 target.socket,
                 {
+
                   type:
                     "key-exchange",
 
@@ -1059,9 +1301,11 @@ wss.on(
 
                   keyData:
                     keyData
+
                 }
               );
             }
+
 
             break;
           }
@@ -1080,6 +1324,7 @@ wss.on(
               selfDestruct
             } = data;
 
+
             if (
               !sessionId ||
               !text
@@ -1087,24 +1332,54 @@ wss.on(
               return;
             }
 
+
             if (
-              !sessions.has(sessionId)
+              !sessions.has(
+                sessionId
+              )
             ) {
               return;
             }
+
 
             const senderId =
               fromId ||
               currentUserId;
 
+
+            /*
+             * IMPORTANT FIX:
+             *
+             * Use the client's msgId if it
+             * exists.
+             *
+             * Otherwise create one.
+             *
+             * This keeps the ID identical
+             * on sender and receiver.
+             */
+
             const msgId =
               data.msgId != null &&
               String(data.msgId).length > 0
+
                 ? String(data.msgId)
+
                 : generateMessageId();
 
+
+            /*
+             * Client sends selfDestruct
+             * in milliseconds.
+             *
+             * Convert safely.
+             */
+
             let destructMs =
-              Number(selfDestruct);
+              Number(
+                selfDestruct
+              );
+
 
             if (
               !Number.isFinite(
@@ -1112,8 +1387,16 @@ wss.on(
               ) ||
               destructMs <= 0
             ) {
-              destructMs = 0;
+
+              destructMs =
+                0;
             }
+
+
+            /*
+             * Prevent unreasonable
+             * negative / NaN values.
+             */
 
             destructMs =
               Math.max(
@@ -1123,14 +1406,19 @@ wss.on(
                 )
               );
 
+
             const createdAt =
               Date.now();
 
+
             const expiresAt =
               destructMs > 0
+
                 ? createdAt +
                   destructMs
+
                 : null;
+
 
             const payload = {
 
@@ -1147,11 +1435,15 @@ wss.on(
                 senderId,
 
               fromName:
-                users.get(senderId)?.name ||
+                users.get(
+                  senderId
+                )?.name ||
                 "Unknown",
 
               fromAvatar:
-                users.get(senderId)?.avatar ||
+                users.get(
+                  senderId
+                )?.avatar ||
                 null,
 
               text:
@@ -1165,12 +1457,25 @@ wss.on(
 
               expiresAt:
                 expiresAt
+
             };
+
+
+            /*
+             * Send exactly the same
+             * message object to both sides.
+             */
 
             broadcastToSession(
               sessionId,
               payload
             );
+
+
+            /*
+             * Schedule synchronized
+             * server-side deletion.
+             */
 
             if (
               destructMs > 0
@@ -1183,6 +1488,7 @@ wss.on(
               );
             }
 
+
             console.log(
               "Message:",
               msgId,
@@ -1190,6 +1496,7 @@ wss.on(
                 ? `expires in ${destructMs}ms`
                 : "persistent"
             );
+
 
             break;
           }
@@ -1208,15 +1515,20 @@ wss.on(
               fromId
             } = data;
 
+
             if (
-              !sessions.has(sessionId)
+              !sessions.has(
+                sessionId
+              )
             ) {
               return;
             }
 
+
             const senderId =
               fromId ||
               currentUserId;
+
 
             if (
               !isSessionMember(
@@ -1227,9 +1539,11 @@ wss.on(
               return;
             }
 
+
             broadcastToSession(
               sessionId,
               {
+
                 type:
                   "edit-message",
 
@@ -1241,8 +1555,10 @@ wss.on(
 
                 newText:
                   newText
+
               }
             );
+
 
             break;
           }
@@ -1259,6 +1575,7 @@ wss.on(
               id
             } = data;
 
+
             if (
               !sessionId ||
               id == null
@@ -1266,11 +1583,15 @@ wss.on(
               return;
             }
 
+
             if (
-              !sessions.has(sessionId)
+              !sessions.has(
+                sessionId
+              )
             ) {
               return;
             }
+
 
             if (
               !isSessionMember(
@@ -1281,14 +1602,27 @@ wss.on(
               return;
             }
 
+
+            /*
+             * Cancel automatic timer,
+             * because message is already
+             * being deleted.
+             */
+
             clearMessageTimer(
               sessionId,
               id
             );
 
+
+            /*
+             * Tell BOTH clients.
+             */
+
             broadcastToSession(
               sessionId,
               {
+
                 type:
                   "delete-message",
 
@@ -1297,8 +1631,10 @@ wss.on(
 
                 sessionId:
                   sessionId
+
               }
             );
+
 
             break;
           }
@@ -1314,12 +1650,17 @@ wss.on(
               sessionId
             } = data;
 
+
             const session =
-              sessions.get(sessionId);
+              sessions.get(
+                sessionId
+              );
+
 
             if (!session) {
               return;
             }
+
 
             if (
               !session.users.includes(
@@ -1328,6 +1669,12 @@ wss.on(
             ) {
               return;
             }
+
+
+            /*
+             * Clear all timers belonging
+             * to this session.
+             */
 
             for (
               const [
@@ -1343,7 +1690,9 @@ wss.on(
                 )
               ) {
 
-                clearTimeout(timer);
+                clearTimeout(
+                  timer
+                );
 
                 messageTimers.delete(
                   key
@@ -1351,25 +1700,31 @@ wss.on(
               }
             }
 
+
             broadcastToSession(
               sessionId,
               {
+
                 type:
                   "session-ended",
 
                 sessionId:
                   sessionId
+
               }
             );
+
 
             sessions.delete(
               sessionId
             );
 
+
             console.log(
               "Session ended:",
               sessionId
             );
+
 
             break;
           }
@@ -1386,35 +1741,45 @@ wss.on(
               groupName
             } = data;
 
+
             const ownerId =
               fromId ||
               currentUserId;
+
 
             if (!ownerId) {
               return;
             }
 
+
             const groupId =
               generateGroupId();
+
 
             groups.set(
               groupId,
               {
+
                 name:
                   groupName ||
                   "Group Chat",
 
                 members:
-                  [ownerId],
+                  [
+                    ownerId
+                  ],
 
                 owner:
                   ownerId
+
               }
             );
+
 
             safeSend(
               ws,
               {
+
                 type:
                   "group-created",
 
@@ -1424,13 +1789,16 @@ wss.on(
                 groupName:
                   groupName ||
                   "Group Chat"
+
               }
             );
+
 
             console.log(
               "Group created:",
               groupId
             );
+
 
             break;
           }
@@ -1447,28 +1815,40 @@ wss.on(
               groupId
             } = data;
 
+
             const memberId =
               fromId ||
               currentUserId;
 
+
             const group =
-              groups.get(groupId);
+              groups.get(
+                groupId
+              );
+
 
             if (!group) {
 
               safeSend(
                 ws,
                 {
+
                   type:
                     "error",
 
                   message:
                     "Group not found"
+
                 }
               );
 
               return;
             }
+
+
+            /*
+             * Already a member.
+             */
 
             if (
               group.members.includes(
@@ -1479,6 +1859,7 @@ wss.on(
               safeSend(
                 ws,
                 {
+
                   type:
                     "group-joined",
 
@@ -1490,19 +1871,28 @@ wss.on(
 
                   members:
                     group.members
+
                 }
               );
 
+
               return;
             }
+
+
+            /*
+             * Add member.
+             */
 
             group.members.push(
               memberId
             );
 
+
             safeSend(
               ws,
               {
+
                 type:
                   "group-joined",
 
@@ -1514,8 +1904,14 @@ wss.on(
 
                 members:
                   group.members
+
               }
             );
+
+
+            /*
+             * Notify existing members.
+             */
 
             group.members.forEach(
               (uid) => {
@@ -1526,14 +1922,19 @@ wss.on(
                   return;
                 }
 
+
                 const user =
-                  users.get(uid);
+                  users.get(
+                    uid
+                  );
+
 
                 if (user) {
 
                   safeSend(
                     user.socket,
                     {
+
                       type:
                         "group-user-joined",
 
@@ -1544,20 +1945,26 @@ wss.on(
                         memberId,
 
                       userName:
-                        users.get(memberId)?.name ||
+                        users.get(
+                          memberId
+                        )?.name ||
                         "User",
 
                       userAvatar:
-                        users.get(memberId)?.avatar ||
+                        users.get(
+                          memberId
+                        )?.avatar ||
                         null,
 
                       memberCount:
                         group.members.length
+
                     }
                   );
                 }
               }
             );
+
 
             break;
           }
@@ -1576,16 +1983,22 @@ wss.on(
               selfDestruct
             } = data;
 
+
             const group =
-              groups.get(groupId);
+              groups.get(
+                groupId
+              );
+
 
             if (!group) {
               return;
             }
 
+
             const senderId =
               fromId ||
               currentUserId;
+
 
             if (
               !group.members.includes(
@@ -1595,14 +2008,21 @@ wss.on(
               return;
             }
 
+
             const msgId =
               data.msgId != null &&
               String(data.msgId).length > 0
+
                 ? String(data.msgId)
+
                 : generateMessageId();
 
+
             let destructMs =
-              Number(selfDestruct);
+              Number(
+                selfDestruct
+              );
+
 
             if (
               !Number.isFinite(
@@ -1610,22 +2030,28 @@ wss.on(
               ) ||
               destructMs <= 0
             ) {
-              destructMs = 0;
+
+              destructMs =
+                0;
             }
+
 
             destructMs =
               Math.floor(
                 destructMs
               );
 
+
             const createdAt =
               Date.now();
+
 
             const expiresAt =
               destructMs > 0
                 ? createdAt +
                   destructMs
                 : null;
+
 
             const payload = {
 
@@ -1642,11 +2068,15 @@ wss.on(
                 senderId,
 
               fromName:
-                users.get(senderId)?.name ||
+                users.get(
+                  senderId
+                )?.name ||
                 "Unknown",
 
               fromAvatar:
-                users.get(senderId)?.avatar ||
+                users.get(
+                  senderId
+                )?.avatar ||
                 null,
 
               text:
@@ -1660,20 +2090,16 @@ wss.on(
 
               expiresAt:
                 expiresAt
+
             };
+
 
             group.members.forEach(
               (uid) => {
-
-                if (
-                  uid === senderId
-                ) {
-                  return;
-                }
-
                 const user =
-                  users.get(uid);
-
+                  users.get(
+                    uid
+                  );
                 if (user) {
 
                   safeSend(
@@ -1684,12 +2110,18 @@ wss.on(
               }
             );
 
+
+            /*
+             * Group self-destruct.
+             */
+
             if (
               destructMs > 0
             ) {
 
               const key =
                 `group:${groupId}:${msgId}`;
+
 
               const timer =
                 setTimeout(
@@ -1699,13 +2131,17 @@ wss.on(
                       (uid) => {
 
                         const user =
-                          users.get(uid);
+                          users.get(
+                            uid
+                          );
+
 
                         if (user) {
 
                           safeSend(
                             user.socket,
                             {
+
                               type:
                                 "delete-message",
 
@@ -1714,11 +2150,13 @@ wss.on(
 
                               groupId:
                                 groupId
+
                             }
                           );
                         }
                       }
                     );
+
 
                     messageTimers.delete(
                       key
@@ -1728,11 +2166,13 @@ wss.on(
                   destructMs
                 );
 
+
               messageTimers.set(
                 key,
                 timer
               );
             }
+
 
             break;
           }
@@ -1743,6 +2183,11 @@ wss.on(
              ============================================ */
 
           default: {
+
+            /*
+             * Silently ignore unknown
+             * message types.
+             */
 
             break;
           }
@@ -1763,8 +2208,20 @@ wss.on(
           return;
         }
 
+
         const user =
-          users.get(currentUserId);
+          users.get(
+            currentUserId
+          );
+
+
+        /*
+         * Important:
+         *
+         * If the user refreshed and already
+         * has a newer socket, don't delete
+         * the newer connection.
+         */
 
         if (
           user &&
@@ -1775,6 +2232,11 @@ wss.on(
             currentUserId
           );
 
+
+          /*
+           * End all P2P sessions
+           * involving this user.
+           */
 
           for (
             const [
@@ -1789,6 +2251,11 @@ wss.on(
                 currentUserId
               )
             ) {
+
+              /*
+               * Clear timers for
+               * this session.
+               */
 
               for (
                 const [
@@ -1814,16 +2281,20 @@ wss.on(
                 }
               }
 
+
               broadcastToSession(
                 sid,
                 {
+
                   type:
                     "session-ended",
 
                   sessionId:
                     sid
+
                 }
               );
+
 
               sessions.delete(
                 sid
@@ -1831,6 +2302,10 @@ wss.on(
             }
           }
 
+
+          /*
+           * Remove user from groups.
+           */
 
           for (
             const [
@@ -1845,6 +2320,7 @@ wss.on(
                 currentUserId
               );
 
+
             if (
               index !== -1
             ) {
@@ -1853,6 +2329,15 @@ wss.on(
                 index,
                 1
               );
+
+
+              /*
+               * If owner leaves,
+               * remove the group.
+               *
+               * This preserves a simple
+               * ownership model.
+               */
 
               if (
                 group.owner ===
@@ -1866,17 +2351,27 @@ wss.on(
                 continue;
               }
 
+
+              /*
+               * Notify remaining
+               * group members.
+               */
+
               group.members.forEach(
                 (uid) => {
 
                   const member =
-                    users.get(uid);
+                    users.get(
+                      uid
+                    );
+
 
                   if (member) {
 
                     safeSend(
                       member.socket,
                       {
+
                         type:
                           "group-user-left",
 
@@ -1888,11 +2383,17 @@ wss.on(
 
                         memberCount:
                           group.members.length
+
                       }
                     );
                   }
                 }
               );
+
+
+              /*
+               * Delete empty groups.
+               */
 
               if (
                 group.members.length ===
@@ -1922,14 +2423,31 @@ wss.on(
    SERVER START
    ====================================================== */
 
-server.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-
+server.listen(PORT, "0.0.0.0", () => {
     console.log(
-      `ShadowChat Relay running on port ${PORT}`
+        `ShadowChat server listening on port ${PORT}`
+    );
+});
+
+server.on("error", (err) => {
+    console.error(
+        "HTTP SERVER ERROR:",
+        err
     );
 
-  }
-);
+    process.exit(1);
+});
+
+process.on("uncaughtException", (err) => {
+    console.error(
+        "UNCAUGHT EXCEPTION:",
+        err
+    );
+});
+
+process.on("unhandledRejection", (reason) => {
+    console.error(
+        "UNHANDLED REJECTION:",
+        reason
+    );
+});
