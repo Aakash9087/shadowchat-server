@@ -274,8 +274,8 @@ switch (data.type) {
 
   /* ========== MESSAGE RELAY ========== */
   case "message": {
-    const { sessionId, fromId, text, selfDestruct } = data;
-    const msgId = Date.now(); // Generate timestamp once to use as ID
+    const { sessionId, fromId, text, selfDestruct, expiresAt } = data;
+    const msgId = data.msgId || Date.now();
 
     if (!sessions.has(sessionId)) return;
 
@@ -288,19 +288,21 @@ switch (data.type) {
       fromAvatar: users.get(fromId)?.avatar,
       text,
       timestamp: msgId,
-      selfDestruct: selfDestruct // Pass the timer value
+      selfDestruct,
+      expiresAt: Number(expiresAt || 0)
     };
 
     broadcastToSession(sessionId, payload);
 
     // Self destruct timer (server side sync)
-    if (selfDestruct && Number(selfDestruct) > 0) {
+    const delay = expiresAt ? Number(expiresAt) - Date.now() : Number(selfDestruct || 0);
+    if (delay > 0) {
       setTimeout(() => {
         broadcastToSession(sessionId, {
           type: "delete-message",
           id: msgId,
         });
-      }, Number(selfDestruct));
+      }, delay);
     }
 
     break;
@@ -415,7 +417,7 @@ switch (data.type) {
   }
 
   case "group-message": {
-    const { groupId, fromId, text } = data;
+    const { groupId, fromId, text, selfDestruct, expiresAt, msgId } = data;
     const group = groups.get(groupId);
     if (!group) return;
 
@@ -426,7 +428,10 @@ switch (data.type) {
       fromName: users.get(fromId)?.name || "Unknown",
       fromAvatar: users.get(fromId)?.avatar,
       text,
-      timestamp: Date.now()
+      timestamp: msgId || Date.now(),
+      msgId: msgId || Date.now(),
+      selfDestruct,
+      expiresAt: Number(expiresAt || 0)
     };
 
     group.members.forEach(uid => {
@@ -435,6 +440,15 @@ switch (data.type) {
         if (u) safeSend(u.socket, payload);
       }
     });
+    const delay = expiresAt ? Number(expiresAt) - Date.now() : Number(selfDestruct || 0);
+    if (delay > 0) {
+      setTimeout(() => {
+        group.members.forEach(uid => {
+          const user = users.get(uid);
+          if (user) safeSend(user.socket, { type: "delete-message", id: payload.msgId });
+        });
+      }, delay);
+    }
     break;
   }
 
@@ -471,4 +485,4 @@ console.log("ShadowChat Relay running on port", PORT);
 });
 
 
-Close
+
